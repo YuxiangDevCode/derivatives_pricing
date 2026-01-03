@@ -18,6 +18,10 @@ ENV/
 # IDE
 .vscode/
 .idea/
+
+# Development files
+dev/
+*_dev.py
 *.swp
 *.swo
 *~

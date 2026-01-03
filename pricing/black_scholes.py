@@ -2,7 +2,7 @@ import numpy as np
 from scipy.stats import norm
 
 
-def _compute_d1_d2(S: float, K: float, T: float, r: float, sigma: float) -> tuple:
+def compute_d1_d2(S: float, K: float, T: float, r: float, sigma: float) -> tuple:
     """
     Helper function to compute d1 and d2 for Black-Scholes formula.
     
@@ -94,19 +94,10 @@ def black_scholes(
     >>> call_price = black_scholes(S=100, K=100, T=1, r=0.05, sigma=0.2)
     >>> print(f"Call price: ${call_price:.2f}")
     Call price: $10.45
-    
-    >>> # Price the corresponding put option
-    >>> put_price = black_scholes(S=100, K=100, T=1, r=0.05, sigma=0.2, option_type='put')
-    >>> print(f"Put price: ${put_price:.2f}")
-    Put price: $5.57
     """
     if option_type not in ["call", "put"]:
-        raise ValueError(
-            f"option_type must be 'call' or 'put', got '{option_type}'"
-        )
-    
-    d1, d2 = _compute_d1_d2(S, K, T, r, sigma)
-    
+        raise ValueError("option_type must be 'call' or 'put'")
+    d1, d2 = compute_d1_d2(S, K, T, r, sigma)
     if option_type == "call":
         option_price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
     else:  # put

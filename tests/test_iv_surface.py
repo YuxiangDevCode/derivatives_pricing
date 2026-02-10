@@ -6,8 +6,6 @@ Tests cover:
 - Moneyness calculations
 - Smile extraction (call, put, composite)
 - Surface building
-
-Each function has 2-3 humanized tests that verify core behavior.
 """
 
 import pytest

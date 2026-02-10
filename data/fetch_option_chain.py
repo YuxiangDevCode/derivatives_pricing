@@ -52,9 +52,11 @@ def fetch_option_chain(
     >>> # Force cache-only (research notebooks)
     >>> df = fetch_option_chain('SPY', '2026-08-21', mode='cache')
     """
-    # Default cache directory
+    # Default cache directory: use absolute path from this module's location
     if cache_dir is None:
-        cache_dir = Path('data/raw')
+        # Path(__file__) is data/fetch_option_chain.py, parent is data/, parent.parent is project root
+        project_root = Path(__file__).parent.parent
+        cache_dir = project_root / 'data' / 'raw'
     cache_dir = Path(cache_dir)
     
     # Standardize the expiration_date input to 'yyyy-mm-dd' format
@@ -187,7 +189,9 @@ def fetch_multi_expiry_chains(
         target_expirations = [30, 60, 90, 180, 270]
     
     if cache_dir is None:
-        cache_dir = Path('data/raw')
+        # Use absolute path from this module's location
+        project_root = Path(__file__).parent.parent
+        cache_dir = project_root / 'data' / 'raw'
     
     # Get available expirations from Yahoo Finance
     stock = yf.Ticker(ticker)

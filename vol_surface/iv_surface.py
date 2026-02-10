@@ -325,23 +325,6 @@ def extract_smile_at_expiry(
     - ITM options are excluded because they are redundant via put-call parity
     - ATM IV can be chosen from call, put, or their average (document choice)
     - This output is suitable for surface construction and fitting
-
-    TODO
-    ----
-    - Validate required columns exist
-    - Identify ATM row (is_atm == True)
-    - Split:
-        * left wing  : strikes < ATM → use iv_put
-        * right wing : strikes > ATM → use iv_call
-    - Decide ATM iv:
-        * option A: iv_call
-        * option B: iv_put
-        * option C: average (document choice in code comment)
-    - Construct unified 'iv' column
-    - Add 'source' column indicating origin
-    - Drop rows with NaN iv
-    - Sort by log_moneyness
-    - Return clean smile dataframe
     """
     if option_chain.empty:
         raise ValueError("Empty option chain dataframe")
@@ -413,12 +396,6 @@ def compute_atm_vol(option_chain: pd.DataFrame) -> float:
     -----
     - Used for term-structure plots and summary diagnostics
     - Choice of call/put/average must be consistent with smile construction
-
-    TODO
-    ----
-    - Validate ATM row exists and is unique
-    - Select ATM IV consistently (same rule as extract_smile_at_expiry)
-    - Return NaN if ATM IV is invalid
     """
     required_columns = ['is_atm', 'iv_call', 'iv_put']
     missing_columns = [col for col in required_columns if col not in option_chain.columns]

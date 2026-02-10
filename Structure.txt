@@ -1,24 +1,30 @@
-derivatives_pricing/
+Equity_Derivatives_Project/
 ├── pricing/
 │   ├── black_scholes.py
 │   ├── greeks.py
 │   ├── monte_carlo.py
-│   ├── binomial_tree.py
+│   ├── finite_difference.py
 │   └── implied_vol.py
-│   └── finite_difference.py
 ├── vol_surface/
 │   ├── iv_surface.py
+│   └── smile_fitting.py
+├── data/
+│   ├── fetch_option_chain.py
+│   ├── cleaning.py
+│   └── raw/
 ├── tests/
 │   ├── test_black_scholes.py
 │   ├── test_greeks.py
 │   ├── test_monte_carlo.py
-│   └── test_iv_surface.py
+│   ├── test_iv_surface.py
+│   └── test_smile_fitting.py
 ├── notebooks/
-│   └── demo.ipynb
-│   └── demo_pricing.ipynb
-│   └── demo_bs_vs_mc.ipynb
-├── data/
-├── theory
+│   ├── demo_pricing.ipynb
+│   ├── demo_bs_vs_mc.ipynb
+│   └── demo_vol_fitting.ipynb
+├── assets/
+│   ├── smile_fits.png
+│   └── residuals_analysis.png
 ├── README.md
 ├── requirements.txt
-└── setup.py
+└── .gitignore

@@ -140,7 +140,8 @@ def compute_implied_vols(
 
 def add_moneyness_columns(
     option_chain: pd.DataFrame,
-    method: str = "spot"
+    method: str = "spot",
+    r: float = 0.0
 ) -> pd.DataFrame:
     """
     Add moneyness-related columns to an option chain.
@@ -150,19 +151,33 @@ def add_moneyness_columns(
     option_chain : pd.DataFrame
         Must contain columns:
         ['spot', 'strike', 'T', 'call_price', 'put_price']
+    r : float, optional
+        Risk-free rate (continuously compounded) for forward calculation
     method : str, optional
-        Method used to define moneyness.
-        Currently supported:
-        - 'spot' : moneyness = K / S
-        (forward-based moneyness may be added later)
+        Legacy parameter (unused). Moneyness columns always added.
 
     Returns
     -------
     pd.DataFrame
         Copy of `option_chain` with additional columns:
-        - 'moneyness' : strike / spot
-        - 'log_moneyness' : log(strike / spot)
+        - 'moneyness' : S/K (spot-based, for spline fitting)
+        - 'log_moneyness' : log(S/K)
+        - 'log_forward_moneyness' : log(K/F) where F = S*exp(r*T) (for SVI)
         - 'is_atm' : True for strike closest to spot
+    
+    Notes
+    -----
+    - log_moneyness (spot-based) is used for non-parametric spline fitting
+    - log_forward_moneyness (forward-based) is the industry standard for SVI:
+      - k = 0 when K = F (ATM forward)
+      - k > 0 when K > F (OTM call)
+      - k < 0 when K < F (OTM put)
+    - The two conventions run in OPPOSITE directions and are related by
+      k_fwd = -k_spot - r*T. Passing one where the other is expected produces a
+      mirror-image smile that looks like a calibration failure rather than a
+      convention error. Feed log_moneyness to fit_smile_spline and
+      log_forward_moneyness to fit_smile_svi; when overlaying an SVI curve on a
+      spot-moneyness axis, convert the axis first. See docs/svi.md.
     """
     if option_chain.empty:
         raise ValueError("Empty option chain dataframe")
@@ -178,6 +193,10 @@ def add_moneyness_columns(
     # ATM corresponds to log_moneyness = 0 (when S = K)
     df['log_moneyness'] = np.log(df['moneyness'])
     
+    # NEW: Forward-based moneyness for SVI (k = log(K/F))
+    forward = df['spot'] * np.exp(r * df['T'])
+    df['log_forward_moneyness'] = np.log(df['strike'] / forward)
+
     # Mark ATM: strike closest to spot (moneyness closest to 1.0, log_moneyness closest to 0)
     distance_to_atm = np.abs(df['log_moneyness'])
     atm_idx = distance_to_atm.idxmin()
@@ -340,13 +359,16 @@ def extract_smile_at_expiry(
     if len(atm_row) > 1:
         raise ValueError("Multiple ATM rows found (is_atm == True)")
     atm_index = atm_row.index[0]
-    atm_price = df.loc[atm_index, 'spot']
-    # Left wing (OTM puts): strikes < ATM (spot)
-    left_wing = df[df['strike'] < atm_price].copy()
+    # Split the wings at the ATM STRIKE, not at spot. The ATM strike is merely
+    # the closest listed strike to spot, so splitting on spot puts that strike in
+    # a wing as well as in the ATM row, emitting it twice with two different IVs.
+    atm_strike = df.loc[atm_index, 'strike']
+    # Left wing (OTM puts): strikes below the ATM strike
+    left_wing = df[df['strike'] < atm_strike].copy()
     left_wing['implied_volatility'] = left_wing['iv_put']
     left_wing['source'] = 'put'
-    # Right wing (OTM calls): strikes > ATM (spot)
-    right_wing = df[df['strike'] > atm_price].copy()
+    # Right wing (OTM calls): strikes above the ATM strike
+    right_wing = df[df['strike'] > atm_strike].copy()
     right_wing['implied_volatility'] = right_wing['iv_call']
     right_wing['source'] = 'call'
     # ATM row: choose iv_call, iv_put, or average (document choice)
@@ -367,7 +389,7 @@ def extract_smile_at_expiry(
     # Combine and clean
     smile_df = pd.concat([left_wing, atm_row, right_wing], ignore_index=True)
     smile_df = smile_df.dropna(subset=['implied_volatility'])
-    smile_df = smile_df[['T', 'strike', 'log_moneyness', 'implied_volatility', 'source']]
+    smile_df = smile_df[['T', 'spot', 'strike', 'log_moneyness', 'log_forward_moneyness','implied_volatility', 'source']]
     smile_df = smile_df.sort_values('log_moneyness').reset_index(drop=True)
 
     return smile_df

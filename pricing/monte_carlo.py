@@ -16,7 +16,9 @@ def simulate_paths_gbm(
     T: float,
     num_steps: int,
     num_paths: int,
-    seed: int = None,
+    seed: int | None = None,
+    shocks: np.ndarray | None = None,
+    q: float = 0.0,
 ) -> np.ndarray:
     """
     Simulate stock price paths using geometric Brownian motion (GBM).
@@ -46,7 +48,15 @@ def simulate_paths_gbm(
     num_paths : int
         Number of simulation paths
     seed : int, optional
-        Random seed for reproducibility
+        Random seed for reproducibility. Ignored when `shocks` is supplied.
+        `seed=0` is a valid seed; `seed=None` draws fresh entropy.
+    shocks : np.ndarray, optional
+        Pre-drawn standard normal shocks of shape (num_paths, num_steps).
+        Supplying them makes the simulation deterministic given the array and
+        is how common random numbers are threaded through bumped revaluations.
+    q : float, optional
+        Continuous dividend yield (annual). Enters the drift as (r - q);
+        it does not affect discounting.
     
     Returns
     -------
@@ -76,13 +86,27 @@ def simulate_paths_gbm(
     due to repeated Python loop overhead. The vectorized version below is preferred
     for production use.
     """
-    seed = seed or np.random.randint(0, 1e6)
-    np.random.seed(seed)
+    if shocks is None:
+        # default_rng(None) draws fresh entropy; default_rng(0) is a valid,
+        # reproducible seed. Note np.random.seed() is deliberately not used:
+        # it mutates global RNG state shared with every other module.
+        rng = np.random.default_rng(seed)
+        Z = rng.standard_normal((num_paths, num_steps))
+    else:
+        # Caller-supplied shocks enable common random numbers (CRN): pass the
+        # same array to bumped revaluations so finite-difference Greeks
+        # difference out the simulation noise instead of compounding it.
+        Z = np.asarray(shocks, dtype=float)
+        if Z.shape != (num_paths, num_steps):
+            raise ValueError(
+                f"shocks must have shape {(num_paths, num_steps)}, got {Z.shape}"
+            )
+
     dt = T / num_steps
-    
-    # Vectorized implementation using log-returns
-    Z = np.random.normal(size=(num_paths, num_steps))
-    log_returns = (r - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * Z
+
+    # Vectorized implementation using log-returns.
+    # Drift is the cost of carry (r - q)
+    log_returns = (r - q - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * Z
     log_prices = np.cumsum(log_returns, axis=1)
     log_prices = np.hstack((np.zeros((num_paths, 1)), log_prices))
     paths = S0 * np.exp(log_prices)
@@ -311,3 +335,179 @@ def compare_with_black_scholes(
         "absolute_error": absolute_error,
         "relative_error": relative_error,
     }
+
+def _barrier_survival(paths, barrier):
+    """
+    Discrete-monitoring survival indicator for a DOWN barrier.
+
+    Monitoring is on the simulation grid only, including t=0 (column 0 is S0,
+    so a spot already at or below the barrier is dead at inception) and T.
+    The touch convention is strict: min > barrier survives, so touching the
+    barrier exactly knocks out. This matches the closed form, which returns
+    exactly 0 at S0 == barrier.
+
+    This is NOT 1{min_t S_t > H}. It is 1{min_i S_{t_i} > H}, which misses
+    intra-step crossings and therefore OVERPRICES a knock-out. The bias is
+    O(sqrt(dt)) -- see _brownian_bridge_survival_weight for the correction.
+
+    Returns a boolean array of shape (n_paths,).
+    """
+    return np.min(paths, axis=1) > barrier
+
+
+def _brownian_bridge_survival_weight(paths, barrier, sigma, dt):
+    """
+    Continuous-monitoring survival weight for a DOWN barrier, per path.
+
+    Conditional on the two endpoints of a step, the log-price in between is a
+    Brownian bridge, so the probability it crossed the barrier is known in
+    closed form. Taking that expectation instead of a 0/1 sample removes the
+    O(sqrt(dt)) discretisation bias AND makes the weight a smooth function of
+    S0, which is what stabilises bump-and-revalue Greeks.
+
+    Should return a float array of shape (n_paths,) with values in [0, 1],
+    interchangeable with _barrier_survival(...).astype(float).
+
+    TODO: implement.
+      d      = log(paths / barrier), clipped at 0 from below
+      p_hit  = exp(-2 * d[:, :-1] * d[:, 1:] / (sigma**2 * dt))   per step
+      return prod(1 - p_hit, axis=1)
+    Clipping BEFORE multiplying handles a breached endpoint (distance 0 ->
+    p_hit 1 -> weight 0) and guarantees the exponent is never positive, so
+    exp() cannot overflow.
+    """
+    raise NotImplementedError(
+        "Brownian bridge survival weight is not implemented yet; "
+        "call with use_brownian_bridge=False."
+    )
+
+
+def _price_barrier_call_mc(
+    S: float,
+    K: float,
+    barrier: float,
+    T: float,
+    r: float,
+    q: float,
+    sigma: float,
+    n_paths: int,
+    n_steps: int,
+    knock_out: bool,
+    seed: int | None = None,
+    use_brownian_bridge: bool = False,
+    shocks: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """
+    Shared engine for down-and-out / down-and-in European calls.
+
+    The knock-in leg is simulated independently (weight = 1 - survival), not
+    derived from the knock-out leg by parity. That keeps
+    `DO + DI == Black-Scholes vanilla` a genuine numerical test of the whole
+    pipeline rather than an algebraic identity.
+
+    Returns (price, standard_error).
+    """
+    _validate_barrier_mc_inputs(S, K, barrier, T, sigma, n_paths, n_steps)
+
+    paths = simulate_paths_gbm(S, r, sigma, T, n_steps, n_paths, seed, shocks, q)
+    terminal_payoff = np.maximum(paths[:, -1] - K, 0.0)
+
+    if use_brownian_bridge:
+        survival = _brownian_bridge_survival_weight(paths, barrier, sigma, T / n_steps)
+    else:
+        survival = _barrier_survival(paths, barrier).astype(float)
+
+    weight = survival if knock_out else 1.0 - survival
+
+    discounted_payoffs = np.exp(-r * T) * terminal_payoff * weight
+    price = float(np.mean(discounted_payoffs))
+    std_error = float(np.std(discounted_payoffs, ddof=1) / np.sqrt(n_paths))
+    return price, std_error
+
+
+def price_down_and_out_call_mc(
+    S: float,
+    K: float,
+    barrier: float,
+    T: float,
+    r: float,
+    q: float,
+    sigma: float,
+    n_paths: int,
+    n_steps: int,
+    seed: int | None = None,
+    use_brownian_bridge: bool = False,
+    shocks: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """
+    Down-and-out European call, discrete monitoring on the simulation grid.
+
+    Returns:
+        price, standard_error
+    """
+    return _price_barrier_call_mc(
+        S, K, barrier, T, r, q, sigma, n_paths, n_steps,
+        knock_out=True, seed=seed,
+        use_brownian_bridge=use_brownian_bridge, shocks=shocks,
+    )
+
+
+def price_down_and_in_call_mc(
+    S: float,
+    K: float,
+    barrier: float,
+    T: float,
+    r: float,
+    q: float,
+    sigma: float,
+    n_paths: int,
+    n_steps: int,
+    seed: int | None = None,
+    use_brownian_bridge: bool = False,
+    shocks: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """
+    Down-and-in European call, discrete monitoring on the simulation grid.
+
+    Simulated independently of the knock-out leg so that
+    `DO + DI == vanilla` can be checked against the analytic Black-Scholes
+    price as a real validation of drift, discounting and payoff.
+
+    Returns:
+        price, standard_error
+    """
+    return _price_barrier_call_mc(
+        S, K, barrier, T, r, q, sigma, n_paths, n_steps,
+        knock_out=False, seed=seed,
+        use_brownian_bridge=use_brownian_bridge, shocks=shocks,
+    )
+
+def _validate_barrier_mc_inputs(
+    S: float,
+    K: float,
+    barrier: float,
+    T: float,
+    sigma: float,
+    n_paths: int,
+    n_steps: int,
+) -> None:
+    if S <= 0:
+        raise ValueError("Spot must be positive.")
+
+    if K <= 0:
+        raise ValueError("Strike must be positive.")
+
+    if barrier <= 0:
+        raise ValueError("Barrier must be positive.")
+
+    if T <= 0:
+        raise ValueError("Maturity must be positive.")
+
+    if sigma < 0:
+        raise ValueError("Volatility cannot be negative.")
+
+    if n_paths < 2:
+        raise ValueError("n_paths must be at least 2.")
+
+    if n_steps < 1:
+        raise ValueError("n_steps must be at least 1.")
